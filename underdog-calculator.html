@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Underdog EV Calculator</title>
+  <title>Pick Em EV Calculator</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
   <style>
@@ -23,10 +23,15 @@ const e = React.createElement;
 const { useState } = React;
 
 // ── Math ──────────────────────────────────────────────────────────────────────
+// adjPayouts: [allCorrect, 1wrong, 2wrong] multipliers
+// isFlex: UD flex scoring (0,1,2 misses)
+// isHedge: Dabble hedge scoring (0,1,2 misses)
 const FORMATS = {
-  "2-pick": { n: 2, adjPayouts: [3.5 * 0.995] },
-  "3-pick": { n: 3, adjPayouts: [6.5 * 0.995] },
-  "6-Flex": { n: 6, adjPayouts: [25 * 0.995, 2.6 * 0.995, 0.25 * 0.995] },
+  "UD 2-pick":       { platform:"UD",     n:2, adjPayouts:[3.5*0.995] },
+  "UD 3-pick":       { platform:"UD",     n:3, adjPayouts:[6.5*0.995] },
+  "UD 6-Flex":       { platform:"UD",     n:6, adjPayouts:[25*0.995, 2.6*0.995, 0.25*0.995], isFlex:true },
+  "Dabble 3 All-in": { platform:"Dabble", n:3, adjPayouts:[6] },
+  "Dabble 6 Hedge":  { platform:"Dabble", n:6, adjPayouts:[25, 1.5, 0.4], isHedge:true },
 };
 
 function C(n, k) {
@@ -34,35 +39,33 @@ function C(n, k) {
   for (let i = 0; i < k; i++) r = (r * (n - i)) / (i + 1);
   return r;
 }
-function calcWinProb(legs, fmt) {
-  if (fmt === "6-Flex") return Math.pow(legs[0], 6);
-  return legs.reduce((prod, p) => prod * p, 1);
-}
-function calcEV(winProb, fmt) {
-  const { adjPayouts, n } = FORMATS[fmt];
-  if (fmt === "6-Flex") {
-    const p = Math.pow(winProb, 1 / n);
-    return adjPayouts.reduce((s, payout, miss) => s + C(n, miss) * Math.pow(p, n - miss) * Math.pow(1 - p, miss) * payout, 0);
+
+function calcEV(p, fmt) {
+  const { adjPayouts, n, isFlex, isHedge } = FORMATS[fmt];
+  if (isFlex || isHedge) {
+    // p = per-leg probability
+    return adjPayouts.reduce((s, payout, miss) =>
+      s + C(n, miss) * Math.pow(p, n - miss) * Math.pow(1 - p, miss) * payout, 0);
   }
-  return winProb * adjPayouts[0];
+  // all-in: p = combined win prob
+  return p * adjPayouts[0];
 }
-function calcKelly(winProb, fmt) {
-  const b = FORMATS[fmt].adjPayouts[0] - 1;
-  return Math.max(0, (b * winProb - (1 - winProb)) / b);
-}
+
 function calcBreakeven(fmt) {
-  const { adjPayouts, n } = FORMATS[fmt];
-  if (fmt === "6-Flex") {
-    let lo = 0.5, hi = 0.99;
+  const { adjPayouts, n, isFlex, isHedge } = FORMATS[fmt];
+  if (isFlex || isHedge) {
+    let lo = 0.4, hi = 0.99;
     for (let i = 0; i < 80; i++) {
       const mid = (lo + hi) / 2;
-      const ev = adjPayouts.reduce((s, p, miss) => s + C(n, miss) * Math.pow(mid, n - miss) * Math.pow(1 - mid, miss) * p, 0);
+      const ev = adjPayouts.reduce((s, payout, miss) =>
+        s + C(n, miss) * Math.pow(mid, n - miss) * Math.pow(1 - mid, miss) * payout, 0);
       ev < 1 ? (lo = mid) : (hi = mid);
     }
     return (lo + hi) / 2;
   }
-  return 1 / adjPayouts[0];
+  return Math.pow(1 / adjPayouts[0], 1 / n);
 }
+
 function oddsToProb(odds) {
   const o = Number(odds);
   if (isNaN(o) || o === 0) return 0;
@@ -76,22 +79,20 @@ function fmtP(v, d = 2) { return `${Number(v).toFixed(d)}%`; }
 
 // ── Tokens ────────────────────────────────────────────────────────────────────
 const AC = "#6EE7B7", BDR = "rgba(255,255,255,0.08)", CARD = "rgba(255,255,255,0.035)";
-const RED = "#F87171", PURP = "#A78BFA", GREEN = "#34D399";
+const RED = "#F87171", PURP = "#A78BFA", GREEN = "#34D399", ORANGE = "#FB923C";
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-function s(...args) {
-  return Object.assign({}, ...args);
-}
+const PLAT_COLOR = { UD: AC, Dabble: ORANGE };
+
+function s(...args) { return Object.assign({}, ...args); }
 const baseCard = { background: CARD, border: `1px solid ${BDR}`, borderRadius: 12, padding: "16px 18px", marginBottom: 14 };
 const baseStatBox = { background: "rgba(0,0,0,0.25)", borderRadius: 8, padding: "11px 13px" };
 const baseMiniInput = { width: "100%", background: "transparent", border: "none", outline: "none", color: "#F1F5F9", fontSize: 12, padding: "6px 7px", fontFamily: "monospace", fontWeight: 700 };
 
-// ── Components ────────────────────────────────────────────────────────────────
 function Card({ children, style }) {
   return e("div", { style: s(baseCard, style || {}) }, children);
 }
-function SecLabel({ children }) {
-  return e("div", { style: { fontSize: 9, letterSpacing: "0.18em", textTransform: "uppercase", color: AC, marginBottom: 12, fontFamily: "monospace" } }, children);
+function SecLabel({ children, color }) {
+  return e("div", { style: { fontSize: 9, letterSpacing: "0.18em", textTransform: "uppercase", color: color || AC, marginBottom: 12, fontFamily: "monospace" } }, children);
 }
 function FieldLbl({ children }) {
   return e("div", { style: { fontSize: 10, color: "#64748B", marginBottom: 3 } }, children);
@@ -132,12 +133,16 @@ function LegInput({ label, pct, odds, onChangePct, onChangeOdds }) {
 
 // ── Slip ──────────────────────────────────────────────────────────────────────
 let nextId = 3;
+function makeLegs(n) { return Array.from({length:n}, () => ({ pct:"56", odds:"-127" })); }
 function makeSlip() {
-  return { id: nextId++, fmt: "2-pick", active: true, legs: [{ pct: "56", odds: "-127" }, { pct: "56", odds: "-127" }], avgPct: "56", avgOdds: "-127" };
+  return { id: nextId++, fmt: "UD 2-pick", active: true, legs: makeLegs(2), avgPct:"56", avgOdds:"-127" };
 }
 
 function SlipRow({ slip, onChange, onRemove, canRemove, bankroll, kellyFrac }) {
-  const { fmt, active, legs, avgPct, avgOdds } = slip;
+  const { fmt, legs, avgPct, avgOdds } = slip;
+  const fmtCfg = FORMATS[fmt];
+  const platColor = PLAT_COLOR[fmtCfg.platform] || AC;
+  const useAvg = fmtCfg.isFlex || fmtCfg.isHedge;
 
   function updateLeg(i, field, val) {
     const newLegs = legs.map((l, idx) => {
@@ -147,69 +152,70 @@ function SlipRow({ slip, onChange, onRemove, canRemove, bankroll, kellyFrac }) {
     });
     onChange({ ...slip, legs: newLegs });
   }
-  function updateAvgPct(val) { onChange({ ...slip, avgPct: val, avgOdds: probToOdds(Number(val) / 100) }); }
-  function updateAvgOdds(val) { onChange({ ...slip, avgOdds: val, avgPct: (oddsToProb(val) * 100).toFixed(1) }); }
+  function updateAvgPct(val) {
+    onChange({ ...slip, avgPct: val, avgOdds: probToOdds(Number(val) / 100) });
+  }
+  function updateAvgOdds(val) {
+    onChange({ ...slip, avgOdds: val, avgPct: (oddsToProb(val) * 100).toFixed(1) });
+  }
   function changeFmt(f) {
-    const n = FORMATS[f].n;
-    const cur = slip.legs.slice(0, n);
-    while (cur.length < n) cur.push({ pct: "56", odds: "-127" });
-    onChange({ ...slip, fmt: f, legs: cur });
+    const newN = FORMATS[f].n;
+    const newLegs = makeLegs(newN);
+    onChange({ ...slip, fmt: f, legs: newLegs });
   }
 
-  const legProbs = fmt === "6-Flex" ? [oddsToProb(avgOdds) || Number(avgPct) / 100] : legs.map(l => oddsToProb(l.odds) || Number(l.pct) / 100);
-  const winProb = calcWinProb(legProbs, fmt);
-  const ev = winProb > 0 ? calcEV(winProb, fmt) : 0;
+  // Per-leg prob for EV calc
+  const perLegP = useAvg
+    ? (oddsToProb(avgOdds) || Number(avgPct) / 100)
+    : legs.length > 0 ? legs.reduce((s,l) => s + (oddsToProb(l.odds) || Number(l.pct)/100), 0) / legs.length : 0;
+
+  // Combined win prob (for display)
+  const combinedP = useAvg
+    ? Math.pow(perLegP, fmtCfg.n)
+    : legs.reduce((prod, l) => prod * (oddsToProb(l.odds) || Number(l.pct)/100), 1);
+
+  const ev = perLegP > 0 ? calcEV(useAvg ? perLegP : combinedP, fmt) : 0;
   const evNet = (ev - 1) * 100;
   const be = calcBreakeven(fmt);
-  const hasEdge = fmt === "6-Flex" ? legProbs[0] > be : winProb > be;
-  const kelly = winProb > 0 ? calcKelly(winProb, fmt) * kellyFrac : 0;
+
+  // Kelly on per-slip basis using combined prob and all-in payout[0]
+  const b = fmtCfg.adjPayouts[0] - 1;
+  const kelly = combinedP > 0 ? Math.max(0, (b * combinedP - (1 - combinedP)) / b) * kellyFrac : 0;
   const perSlipBet = Number(bankroll) * kelly;
-  const avgPerLeg = fmt !== "6-Flex" ? legs.reduce((s, l) => s + (oddsToProb(l.odds) || Number(l.pct) / 100), 0) / legs.length : legProbs[0];
+  const hasEdge = evNet > 0;
 
-  const borderColor = active ? (hasEdge ? "rgba(110,231,183,0.2)" : "rgba(239,68,68,0.15)") : BDR;
-
-  return e("div", { style: { background: "rgba(0,0,0,0.2)", border: `1px solid ${borderColor}`, borderRadius: 10, padding: "12px 14px", marginBottom: 10, opacity: active ? 1 : 0.4, transition: "all 0.2s" } },
-
-    // Header
-    e("div", { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 10, flexWrap: "wrap" } },
-      e("button", {
-        onClick: () => onChange({ ...slip, active: !active }),
-        style: { width: 30, height: 17, borderRadius: 9, border: "none", cursor: "pointer", background: active ? AC : "#1E293B", position: "relative", flexShrink: 0 }
-      }, e("span", { style: { position: "absolute", top: 2, left: active ? 13 : 2, width: 13, height: 13, borderRadius: "50%", background: "white", transition: "left 0.2s" } })),
-
-      ...Object.keys(FORMATS).map(f =>
-        e("button", {
+  return e(Card, null,
+    // Format selector row
+    e("div", { style: { display:"flex", gap:6, flexWrap:"wrap", alignItems:"center", marginBottom:12 } },
+      ...Object.keys(FORMATS).map(f => {
+        const pc = PLAT_COLOR[FORMATS[f].platform] || AC;
+        const active = fmt === f;
+        return e("button", {
           key: f, onClick: () => changeFmt(f),
-          style: { padding: "4px 11px", borderRadius: 16, border: `1px solid ${fmt === f ? AC : BDR}`, background: fmt === f ? `${AC}15` : "transparent", color: fmt === f ? AC : "#64748B", cursor: "pointer", fontSize: 11, fontWeight: 600 }
-        }, f)
-      ),
-
-      active && winProb > 0 ? e("span", { style: { marginLeft: "auto", fontSize: 10, padding: "3px 8px", borderRadius: 4, background: hasEdge ? "rgba(110,231,183,0.1)" : "rgba(239,68,68,0.08)", color: hasEdge ? AC : RED, fontFamily: "monospace", fontWeight: 700 } },
-        hasEdge ? `+${evNet.toFixed(2)}% EV` : "No edge"
-      ) : null,
-
-      canRemove ? e("button", {
-        onClick: onRemove,
-        style: { background: "none", border: "none", color: "#334155", cursor: "pointer", fontSize: 15, marginLeft: (active && winProb > 0) ? 4 : "auto" }
-      }, "✕") : null
+          style: { padding:"4px 10px", borderRadius:16, border:`1px solid ${active ? pc : BDR}`, background: active ? `${pc}18` : "transparent", color: active ? pc : "#64748B", cursor:"pointer", fontSize:10, fontWeight:600 }
+        }, f);
+      }),
+      hasEdge ? e("span", { style: { marginLeft:"auto", fontSize:10, padding:"3px 8px", borderRadius:4, background:"rgba(110,231,183,0.1)", color:AC, fontFamily:"monospace", fontWeight:700 } }, `+${evNet.toFixed(2)}% EV`) : null,
+      !hasEdge && combinedP > 0 ? e("span", { style: { marginLeft:"auto", fontSize:10, padding:"3px 8px", borderRadius:4, background:"rgba(239,68,68,0.08)", color:RED, fontFamily:"monospace", fontWeight:700 } }, "No edge") : null,
+      canRemove ? e("button", { onClick: onRemove, style:{ background:"none", border:"none", color:"#334155", cursor:"pointer", fontSize:15, marginLeft: (!hasEdge && combinedP > 0) ? 4 : "auto" } }, "✕") : null
     ),
 
-    // Legs
-    fmt === "6-Flex"
-      ? e(LegInput, { label: "Average per pick", pct: avgPct, odds: avgOdds, onChangePct: updateAvgPct, onChangeOdds: updateAvgOdds })
-      : legs.map((leg, i) => e(LegInput, { key: i, label: `Leg ${i + 1}`, pct: leg.pct, odds: leg.odds, onChangePct: v => updateLeg(i, "pct", v), onChangeOdds: v => updateLeg(i, "odds", v) })),
+    // Leg inputs
+    useAvg
+      ? e(LegInput, { label:"Average per pick", pct:avgPct, odds:avgOdds, onChangePct:updateAvgPct, onChangeOdds:updateAvgOdds })
+      : legs.map((leg, i) => e(LegInput, { key:i, label:`Leg ${i+1}`, pct:leg.pct, odds:leg.odds, onChangePct:v=>updateLeg(i,"pct",v), onChangeOdds:v=>updateLeg(i,"odds",v) })),
 
-    // Footer stats
-    active && winProb > 0 ? e("div", { style: { display: "flex", alignItems: "flex-end", justifyContent: "space-between", marginTop: 10, flexWrap: "wrap", gap: 10 } },
+    // Footer
+    combinedP > 0 ? e("div", { style:{ display:"flex", alignItems:"flex-end", justifyContent:"space-between", marginTop:10, flexWrap:"wrap", gap:10 } },
       e("div", null,
-        e(FieldLbl, null, "Parlay win prob"),
-        e("div", { style: { fontFamily: "monospace", fontSize: 13, color: "#94A3B8", fontWeight: 700 } }, `${(winProb * 100).toFixed(2)}%`),
-        e("div", { style: { fontSize: 9, color: "#475569" } }, `avg leg ${(avgPerLeg * 100).toFixed(1)}%`)
+        e(FieldLbl, null, "Combined win prob"),
+        e("div", { style:{ fontFamily:"monospace", fontSize:13, color:"#94A3B8", fontWeight:700 } }, `${(combinedP * 100).toFixed(2)}%`),
+        e("div", { style:{ fontSize:9, color:"#475569" } }, `avg leg ${(perLegP * 100).toFixed(1)}% · break-even ${(be*100).toFixed(1)}%`)
       ),
-      e("div", { style: { textAlign: "right" } },
+      e("div", { style:{ textAlign:"right" } },
         e(FieldLbl, null, "Per-slip bet"),
-        e("div", { style: { fontFamily: "monospace", fontSize: 18, fontWeight: 900, color: PURP } }, `$${perSlipBet.toFixed(2)}`),
-        e("div", { style: { fontSize: 9, color: "#475569" } }, `${(kelly * 100).toFixed(2)}% of bankroll`)
+        e("div", { style:{ fontFamily:"monospace", fontSize:18, fontWeight:900, color:PURP } }, `$${perSlipBet.toFixed(2)}`),
+        e("div", { style:{ fontSize:9, color:"#475569" } }, `${(kelly*100).toFixed(2)}% of bankroll`)
       )
     ) : null
   );
@@ -220,101 +226,105 @@ function App() {
   const [bankroll, setBankroll] = useState(1000);
   const [kellyFrac, setKellyFrac] = useState(0.5);
   const [slips, setSlips] = useState([
-    { id: 1, fmt: "2-pick", active: true, legs: [{ pct: "56", odds: "-127" }, { pct: "56", odds: "-127" }], avgPct: "56", avgOdds: "-127" },
-    { id: 2, fmt: "3-pick", active: true, legs: [{ pct: "56", odds: "-127" }, { pct: "56", odds: "-127" }, { pct: "56", odds: "-127" }], avgPct: "56", avgOdds: "-127" },
+    { id:1, fmt:"UD 2-pick",       active:true, legs:makeLegs(2), avgPct:"56", avgOdds:"-127" },
+    { id:2, fmt:"Dabble 6 Hedge",  active:true, legs:makeLegs(6), avgPct:"56", avgOdds:"-127" },
   ]);
 
-  const slipStats = slips.map(s => {
-    const legProbs = s.fmt === "6-Flex" ? [oddsToProb(s.avgOdds) || Number(s.avgPct) / 100] : s.legs.map(l => oddsToProb(l.odds) || Number(l.pct) / 100);
-    const winProb = calcWinProb(legProbs, s.fmt);
-    const ev = winProb > 0 ? calcEV(winProb, s.fmt) : 0;
-    const kelly = winProb > 0 ? calcKelly(winProb, s.fmt) * kellyFrac : 0;
-    return { legProbs, winProb, ev, evNet: (ev - 1) * 100, kelly, perSlipBet: Number(bankroll) * kelly };
+  const slipStats = slips.map(sl => {
+    const fmtCfg = FORMATS[sl.fmt];
+    const useAvg = fmtCfg.isFlex || fmtCfg.isHedge;
+    const perLegP = useAvg
+      ? (oddsToProb(sl.avgOdds) || Number(sl.avgPct)/100)
+      : sl.legs.reduce((s,l) => s+(oddsToProb(l.odds)||Number(l.pct)/100),0)/sl.legs.length;
+    const combinedP = useAvg ? Math.pow(perLegP, fmtCfg.n) : sl.legs.reduce((prod,l)=>prod*(oddsToProb(l.odds)||Number(l.pct)/100),1);
+    const ev = perLegP > 0 ? calcEV(useAvg ? perLegP : combinedP, sl.fmt) : 0;
+    const b = fmtCfg.adjPayouts[0]-1;
+    const kelly = combinedP > 0 ? Math.max(0,(b*combinedP-(1-combinedP))/b)*kellyFrac : 0;
+    return { perLegP, combinedP, ev, evNet:(ev-1)*100, kelly, perSlipBet:Number(bankroll)*kelly };
   });
 
-  const activeItems = slips.map((s, i) => ({ s, st: slipStats[i] })).filter(x => x.s.active && x.st.winProb > 0);
-  const totalBetDay = activeItems.reduce((sum, { st }) => sum + st.perSlipBet, 0);
-  const totalEVProfit = activeItems.reduce((sum, { st }) => sum + st.perSlipBet * (st.ev - 1), 0);
-  const roiOnBet = totalBetDay > 0 ? (totalEVProfit / totalBetDay) * 100 : 0;
-  const dailyBRgrowth = (totalEVProfit / Number(bankroll)) * 100;
+  const activeItems = slips.map((s,i) => ({s, st:slipStats[i]})).filter(x => x.st.combinedP > 0);
+  const totalBet = activeItems.reduce((sum,{st})=>sum+st.perSlipBet,0);
+  const totalEVProfit = activeItems.reduce((sum,{st})=>sum+st.perSlipBet*(st.ev-1),0);
+  const roiOnBet = totalBet > 0 ? (totalEVProfit/totalBet)*100 : 0;
+  const dailyBRgrowth = (totalEVProfit/Number(bankroll))*100;
 
-  const updateSlip = (id, updated) => setSlips(prev => prev.map(s => s.id === id ? updated : s));
-  const removeSlip = id => setSlips(prev => prev.filter(s => s.id !== id));
+  const updateSlip = (id, updated) => setSlips(prev => prev.map(s => s.id===id ? updated : s));
+  const removeSlip = id => setSlips(prev => prev.filter(s => s.id!==id));
   const addSlip = () => setSlips(prev => [...prev, makeSlip()]);
 
-  return e("div", { style: { minHeight: "100vh", background: "#090E1A", color: "#F1F5F9", fontFamily: "'Segoe UI',sans-serif", padding: "20px 14px" } },
-    e("div", { style: { maxWidth: 500, margin: "0 auto" } },
+  return e("div", { style:{ minHeight:"100vh", background:"#090E1A", color:"#F1F5F9", fontFamily:"'Segoe UI',sans-serif", padding:"20px 14px" } },
+    e("div", { style:{ maxWidth:520, margin:"0 auto" } },
 
-      // Header
-      e("div", { style: { textAlign: "center", marginBottom: 22 } },
-        e("div", { style: { fontSize: 9, letterSpacing: "0.3em", color: AC, fontFamily: "monospace", marginBottom: 5 } }, "UNDERDOG FANTASY"),
-        e("h1", { style: { fontSize: 21, fontWeight: 900, color: "#F1F5F9" } }, "EV Calculator")
+      e("div", { style:{ textAlign:"center", marginBottom:22 } },
+        e("div", { style:{ fontSize:9, letterSpacing:"0.3em", color:AC, fontFamily:"monospace", marginBottom:5 } }, "UNDERDOG · DABBLE"),
+        e("h1", { style:{ fontSize:21, fontWeight:900, color:"#F1F5F9" } }, "Pick Em EV Calculator")
       ),
 
-      // Settings
       e(Card, null,
         e(SecLabel, null, "Settings"),
-        e("div", { style: { display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end" } },
+        e("div", { style:{ display:"flex", gap:12, flexWrap:"wrap", alignItems:"flex-end" } },
           e("div", null,
             e(FieldLbl, null, "Bankroll"),
-            e("div", { style: { display: "flex", alignItems: "center", background: "rgba(0,0,0,0.4)", border: `1px solid ${BDR}`, borderRadius: 7 } },
-              e("span", { style: { padding: "0 8px", color: "#475569", fontSize: 13 } }, "$"),
-              e("input", { type: "number", value: bankroll, min: 10, step: 50, onChange: ev => setBankroll(ev.target.value), style: { width: 90, background: "transparent", border: "none", outline: "none", color: "#F1F5F9", fontSize: 14, padding: "7px 4px 7px 0", fontFamily: "monospace", fontWeight: 700 } })
+            e("div", { style:{ display:"flex", alignItems:"center", background:"rgba(0,0,0,0.4)", border:`1px solid ${BDR}`, borderRadius:7 } },
+              e("span", { style:{ padding:"0 8px", color:"#475569", fontSize:13 } }, "$"),
+              e("input", { type:"number", value:bankroll, min:10, step:50, onChange:ev=>setBankroll(ev.target.value), style:{ width:90, background:"transparent", border:"none", outline:"none", color:"#F1F5F9", fontSize:14, padding:"7px 4px 7px 0", fontFamily:"monospace", fontWeight:700 } })
             )
           ),
-          e("div", { style: { flex: 1, minWidth: 180 } },
-            e(FieldLbl, null, `Kelly Fraction: `, e("span", { style: { color: AC, fontFamily: "monospace", fontWeight: 700 } }, `${(kellyFrac * 100).toFixed(0)}%`)),
-            e("input", { type: "range", min: 0, max: 1, step: 0.05, value: kellyFrac, onChange: ev => setKellyFrac(Number(ev.target.value)), style: { width: "100%", accentColor: AC, marginTop: 6 } }),
-            e("div", { style: { display: "flex", justifyContent: "space-between", fontSize: 9, color: "#334155", marginTop: 2 } },
-              e("span", null, "0%"), e("span", null, "½ Kelly (rec.)"), e("span", null, "Full Kelly")
+          e("div", { style:{ flex:1, minWidth:180 } },
+            e(FieldLbl, null, "Kelly Fraction: ", e("span", { style:{ color:AC, fontFamily:"monospace", fontWeight:700 } }, `${(kellyFrac*100).toFixed(0)}%`)),
+            e("input", { type:"range", min:0, max:1, step:0.05, value:kellyFrac, onChange:ev=>setKellyFrac(Number(ev.target.value)), style:{ width:"100%", accentColor:AC, marginTop:6 } }),
+            e("div", { style:{ display:"flex", justifyContent:"space-between", fontSize:9, color:"#334155", marginTop:2 } },
+              e("span",null,"0%"), e("span",null,"½ Kelly (rec.)"), e("span",null,"Full Kelly")
             )
           )
         )
       ),
 
-      // Slips
       e(Card, null,
         e(SecLabel, null, "Daily Slips"),
-        ...slips.map((slip, i) => e(SlipRow, { key: slip.id, slip, onChange: updated => updateSlip(slip.id, updated), onRemove: () => removeSlip(slip.id), canRemove: slips.length > 1, bankroll, kellyFrac })),
-        e("button", { onClick: addSlip, style: { width: "100%", padding: "9px", borderRadius: 8, border: `1px dashed ${BDR}`, background: "transparent", color: "#475569", cursor: "pointer", fontSize: 12, marginTop: 4 } }, "+ Add Slip")
+        ...slips.map((slip,i) => e(SlipRow, { key:slip.id, slip, onChange:updated=>updateSlip(slip.id,updated), onRemove:()=>removeSlip(slip.id), canRemove:slips.length>1, bankroll, kellyFrac })),
+        e("button", { onClick:addSlip, style:{ width:"100%", padding:"9px", borderRadius:8, border:`1px dashed ${BDR}`, background:"transparent", color:"#475569", cursor:"pointer", fontSize:12, marginTop:4 } }, "+ Add Slip")
       ),
 
-      // Day Summary
       e(Card, null,
         e(SecLabel, null, "Day Summary"),
-        e("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 9, marginBottom: 14 } },
-          e(StatBox, { label: "Total Wagered / Day", value: `$${totalBetDay.toFixed(2)}`, sub: "sum of all slip bets" }),
-          e(StatBox, { label: "Expected Profit / Day", value: `$${totalEVProfit.toFixed(2)}`, color: totalEVProfit >= 0 ? GREEN : RED, sub: "EV across all slips" }),
-          e(StatBox, { label: "ROI on Bet", value: fmtP(roiOnBet, 2), color: AC, sub: "profit ÷ total wagered" }),
-          e(StatBox, { label: "Daily BR Growth", value: fmtP(dailyBRgrowth, 3), color: PURP, sub: "profit ÷ bankroll" })
+        e("div", { style:{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9, marginBottom:14 } },
+          e(StatBox, { label:"Total Wagered / Day", value:`$${totalBet.toFixed(2)}`, sub:"sum of all slip bets" }),
+          e(StatBox, { label:"Expected Profit / Day", value:`$${totalEVProfit.toFixed(2)}`, color:totalEVProfit>=0?GREEN:RED, sub:"EV across all slips" }),
+          e(StatBox, { label:"ROI on Bet", value:fmtP(roiOnBet,2), color:AC, sub:"profit ÷ total wagered" }),
+          e(StatBox, { label:"Daily BR Growth", value:fmtP(dailyBRgrowth,3), color:PURP, sub:"profit ÷ bankroll" })
         ),
-        e("table", { style: { width: "100%", borderCollapse: "collapse", fontSize: 11 } },
+        e("table", { style:{ width:"100%", borderCollapse:"collapse", fontSize:11 } },
           e("thead", null,
-            e("tr", { style: { color: "#334155" } },
-              e("td", { style: { padding: "4px 6px" } }, "Format"),
-              e("td", { style: { padding: "4px 6px", textAlign: "right" } }, "Win prob"),
-              e("td", { style: { padding: "4px 6px", textAlign: "right" } }, "Per slip"),
-              e("td", { style: { padding: "4px 6px", textAlign: "right" } }, "Net EV%")
+            e("tr", { style:{ color:"#334155" } },
+              e("td", { style:{ padding:"4px 6px" } }, "Format"),
+              e("td", { style:{ padding:"4px 6px", textAlign:"right" } }, "Win prob"),
+              e("td", { style:{ padding:"4px 6px", textAlign:"right" } }, "Break-even"),
+              e("td", { style:{ padding:"4px 6px", textAlign:"right" } }, "Net EV%")
             )
           ),
           e("tbody", null,
-            ...slips.map((s, i) => {
-              if (!s.active) return null;
+            ...slips.map((sl,i) => {
               const st = slipStats[i];
-              const be = calcBreakeven(s.fmt);
-              const edge = s.fmt === "6-Flex" ? st.legProbs[0] > be : st.winProb > be;
-              return e("tr", { key: s.id, style: { borderTop: `1px solid ${BDR}` } },
-                e("td", { style: { padding: "5px 6px", color: "#94A3B8", fontFamily: "monospace", fontSize: 10 } }, s.fmt),
-                e("td", { style: { padding: "5px 6px", textAlign: "right", fontFamily: "monospace", color: edge ? AC : RED } }, fmtP(st.winProb * 100, 2)),
-                e("td", { style: { padding: "5px 6px", textAlign: "right", fontFamily: "monospace", color: PURP } }, `$${st.perSlipBet.toFixed(2)}`),
-                e("td", { style: { padding: "5px 6px", textAlign: "right", fontFamily: "monospace", color: st.evNet >= 0 ? GREEN : RED } }, `${st.evNet >= 0 ? "+" : ""}${st.evNet.toFixed(2)}%`)
+              if (st.combinedP === 0) return null;
+              const be = calcBreakeven(sl.fmt);
+              const fmtCfg = FORMATS[sl.fmt];
+              const useAvg = fmtCfg.isFlex || fmtCfg.isHedge;
+              const hasEdge = useAvg ? st.perLegP > be : st.combinedP > be;
+              const pc = PLAT_COLOR[fmtCfg.platform] || AC;
+              return e("tr", { key:sl.id, style:{ borderTop:`1px solid ${BDR}` } },
+                e("td", { style:{ padding:"5px 6px", color:pc, fontFamily:"monospace", fontSize:10 } }, sl.fmt),
+                e("td", { style:{ padding:"5px 6px", textAlign:"right", fontFamily:"monospace", color:hasEdge?AC:RED } }, fmtP(st.combinedP*100,2)),
+                e("td", { style:{ padding:"5px 6px", textAlign:"right", fontFamily:"monospace", color:"#475569" } }, fmtP(be*100,1)),
+                e("td", { style:{ padding:"5px 6px", textAlign:"right", fontFamily:"monospace", color:st.evNet>=0?GREEN:RED } }, `${st.evNet>=0?"+":""}${st.evNet.toFixed(2)}%`)
               );
             })
           )
         )
       ),
 
-      e("div", { style: { fontSize: 9, color: "#1E293B", textAlign: "center", lineHeight: 1.8 } }, "Payouts adjusted −0.5% for Champions variance · Actual results vary")
+      e("div", { style:{ fontSize:9, color:"#1E293B", textAlign:"center", lineHeight:1.8 } }, "UD payouts adjusted −0.5% for Champions variance · Dabble payouts exact · Actual results vary")
     )
   );
 }
